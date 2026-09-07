@@ -35,3 +35,35 @@ func defaultActionSignerFactory(config SAPConfig, machineID []byte) (ActionSigne
 
 	return signer, nil
 }
+
+func (t *appstore) newActionSigner() (ActionSigner, string, error) {
+	macAddr, err := t.machine.MacAddress()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get mac address: %w", err)
+	}
+
+	guid, machineID, err := machineIdentity(macAddr)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if t.actionSignerFactory == nil {
+		return nil, "", fmt.Errorf("SAP action signer is not configured")
+	}
+
+	bag, err := t.bag(guid)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get bag: %w", err)
+	}
+
+	signer, err := t.actionSignerFactory(bag.SAPConfig, machineID)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to initialize SAP action signer: %w", err)
+	}
+
+	if signer == nil {
+		return nil, "", fmt.Errorf("SAP action signer factory returned nil")
+	}
+
+	return signer, guid, nil
+}

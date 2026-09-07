@@ -2,8 +2,6 @@ package appstore
 
 import (
 	"archive/zip"
-	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +9,6 @@ import (
 	gohttp "net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -698,189 +695,6 @@ var _ = Describe("AppStore (Download)", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(out.DestinationPath).ToNot(BeEmpty())
 			})
-		})
-	})
-
-	Describe("macOS packages", func() {
-		It("decrypts the downloaded package with in-memory machine identity and dpInfo", func() {
-			tempDir := GinkgoT().TempDir()
-			requestedPath := filepath.Join(tempDir, "custom-output.pkg")
-			packageData := []byte("encrypted package")
-			decryptedData := makeTestXAR([]byte("decrypted payload"), false)
-			dpInfo := bytes.Repeat([]byte{0x42}, 88)
-			decrypter := &fakeMacPackageDecrypter{output: decryptedData}
-
-			mockMachine.EXPECT().
-				MacAddress().
-				Return("00:11:22:aa:bb:cc", nil)
-
-			mockDownloadClient.EXPECT().
-				Send(gomock.Any()).
-				Do(func(req http.Request) {
-					payload := req.Payload.(*http.XMLPayload)
-					Expect(payload.Content["guid"]).To(Equal("001122AABBCC"))
-				}).
-				Return(http.Result[downloadResult]{
-					StatusCode: 200,
-					Data: downloadResult{
-						Items: []downloadItemResult{{
-							URL:   "https://example.test/app.pkg",
-							Sinfs: []Sinf{{DPInfo: dpInfo}},
-							Metadata: map[string]interface{}{
-								"bundleShortVersionString": "1.2.3",
-								"software-platform":        "macos",
-								"product-type":             "mac-os-app",
-							},
-						}},
-					},
-				}, nil)
-
-			mockHTTPClient.EXPECT().
-				NewRequest("GET", "https://example.test/app.pkg", nil).
-				Return(&gohttp.Request{Header: gohttp.Header{}}, nil)
-			mockHTTPClient.EXPECT().
-				Do(gomock.Any()).
-				Return(&gohttp.Response{
-					Body:          io.NopCloser(bytes.NewReader(packageData)),
-					ContentLength: int64(len(packageData)),
-				}, nil)
-
-			store := &appstore{
-				downloadClient: mockDownloadClient,
-				httpClient:     mockHTTPClient,
-				machine:        mockMachine,
-				os:             operatingsystem.New(),
-				macDecrypterFactory: func(ctx context.Context, hardwareID, gotDPInfo []byte) (macPackageDecrypter, error) {
-					Expect(ctx).ToNot(BeNil())
-					Expect(hardwareID).To(Equal([]byte{0x00, 0x11, 0x22, 0xaa, 0xbb, 0xcc}))
-					Expect(gotDPInfo).To(Equal(dpInfo))
-
-					return decrypter, nil
-				},
-			}
-			out, err := store.Download(DownloadInput{
-				Context:    context.Background(),
-				App:        App{ID: 42, BundleID: "com.example.mac"},
-				OutputPath: requestedPath,
-				Platform:   PlatformMacOS,
-			})
-
-			Expect(err).ToNot(HaveOccurred())
-			Expect(out).To(Equal(DownloadOutput{DestinationPath: requestedPath}))
-			Expect(decrypter.input).To(Equal(packageData))
-			Expect(os.ReadFile(requestedPath)).To(Equal(decryptedData))
-			Expect(requestedPath + macDPInfoSuffix).ToNot(BeAnExistingFile())
-			Expect(requestedPath + macHWInfoSuffix).ToNot(BeAnExistingFile())
-		})
-
-		It("downloads an iOS app available on macOS through the mobile package pipeline", func() {
-			tempDir := GinkgoT().TempDir()
-			requestedPath := filepath.Join(tempDir, "developer.apple.wwdc-Release_640199958_11.0.2.ipa")
-			packageBuffer := new(bytes.Buffer)
-			packageWriter := zip.NewWriter(packageBuffer)
-			infoWriter, err := packageWriter.Create("Payload/Developer.app/Info.plist")
-			Expect(err).ToNot(HaveOccurred())
-			info, err := plist.Marshal(map[string]interface{}{
-				"CFBundleExecutable":         "Developer",
-				"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
-			}, plist.BinaryFormat)
-			Expect(err).ToNot(HaveOccurred())
-			_, err = infoWriter.Write(info)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packageWriter.Close()).To(Succeed())
-
-			mockMachine.EXPECT().
-				MacAddress().
-				Return("00:11:22:aa:bb:cc", nil)
-			mockDownloadClient.EXPECT().
-				Send(gomock.Any()).
-				Return(http.Result[downloadResult]{
-					StatusCode: 200,
-					Data: downloadResult{
-						Items: []downloadItemResult{{
-							URL: "https://example.test/developer.ipa",
-							Sinfs: []Sinf{{
-								ID:   0,
-								Data: []byte("mobile sinf"),
-							}},
-							Metadata: map[string]interface{}{
-								"bundleShortVersionString": "11.0.2",
-								"software-platform":        "ios",
-								"product-type":             "ios-app",
-							},
-						}},
-					},
-				}, nil)
-			mockHTTPClient.EXPECT().
-				NewRequest("GET", "https://example.test/developer.ipa", nil).
-				Return(&gohttp.Request{Header: gohttp.Header{}}, nil)
-			mockHTTPClient.EXPECT().
-				Do(gomock.Any()).
-				Return(&gohttp.Response{
-					Body:          io.NopCloser(bytes.NewReader(packageBuffer.Bytes())),
-					ContentLength: int64(packageBuffer.Len()),
-				}, nil)
-
-			store := &appstore{
-				downloadClient: mockDownloadClient,
-				httpClient:     mockHTTPClient,
-				machine:        mockMachine,
-				os:             operatingsystem.New(),
-				macDecrypterFactory: func(context.Context, []byte, []byte) (macPackageDecrypter, error) {
-					Fail("mobile packages must not initialize the macOS package decrypter")
-
-					return nil, nil
-				},
-			}
-
-			out, err := store.Download(DownloadInput{
-				Context:    context.Background(),
-				Account:    Account{Email: "test@example.com"},
-				App:        App{ID: 640199958, BundleID: "developer.apple.wwdc-Release"},
-				OutputPath: tempDir,
-				Platform:   PlatformMacOS,
-			})
-
-			Expect(err).ToNot(HaveOccurred())
-			Expect(out.DestinationPath).To(Equal(requestedPath))
-			Expect(out.Sinfs).To(Equal([]Sinf{{ID: 0, Data: []byte("mobile sinf")}}))
-			Expect(requestedPath).To(BeAnExistingFile())
-			Expect(requestedPath + macEncryptedStageSuffix).ToNot(BeAnExistingFile())
-			Expect(requestedPath + macDecryptedStageSuffix).ToNot(BeAnExistingFile())
-		})
-
-		It("uses a pkg name derived from the generated package name", func() {
-			store := &appstore{os: operatingsystem.New()}
-			tempDir := GinkgoT().TempDir()
-
-			packagePath, err := store.resolveDestinationPath(
-				App{ID: 42, BundleID: "com.example.mac"},
-				"1.2.3",
-				tempDir,
-				PlatformMacOS,
-			)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packagePath).To(Equal(filepath.Join(tempDir, "com.example.mac_42_1.2.3.pkg")))
-		})
-
-		It("preserves an explicit output path", func() {
-			store := &appstore{os: operatingsystem.New()}
-			tempDir := GinkgoT().TempDir()
-			requestedPath := filepath.Join(tempDir, "custom-output")
-
-			packagePath, err := store.resolveDestinationPath(App{}, "1.2.3", requestedPath, PlatformMacOS)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(packagePath).To(Equal(requestedPath))
-		})
-
-		It("rejects a download response without dpInfo", func() {
-			_, err := macDPInfo(nil)
-			Expect(err).To(MatchError(ContainSubstring("dpInfo")))
-		})
-
-		It("rejects conflicting dpInfo values", func() {
-			_, err := macDPInfo([]Sinf{{DPInfo: []byte("one")}, {DPInfo: []byte("two")}})
-			Expect(err).To(MatchError(ContainSubstring("conflicting")))
 		})
 	})
 

@@ -33,10 +33,6 @@ type freeBlock struct {
 	size    uint64
 }
 
-type shimOptions struct {
-	zeroReturnAliases []string
-}
-
 type shims struct {
 	engine      *unicorn.Engine
 	hook        *unicorn.Hook
@@ -56,10 +52,6 @@ type shims struct {
 }
 
 func newShims(engine *unicorn.Engine, coreExports map[string]uint64, icxs []byte) (*shims, error) {
-	return newShimsWithOptions(engine, coreExports, icxs, shimOptions{})
-}
-
-func newShimsWithOptions(engine *unicorn.Engine, coreExports map[string]uint64, icxs []byte, options shimOptions) (*shims, error) {
 	if err := engine.MemMap(shimBase, shimSize); err != nil {
 		return nil, fmt.Errorf("map guest service area: %w", err)
 	}
@@ -80,10 +72,6 @@ func newShimsWithOptions(engine *unicorn.Engine, coreExports map[string]uint64, 
 
 	if err := s.registerPlatformServices(); err != nil {
 		return nil, err
-	}
-
-	if err := s.addAliases(options.zeroReturnAliases, s.returnZero); err != nil {
-		return nil, fmt.Errorf("register profile guest services: %w", err)
 	}
 
 	var err error

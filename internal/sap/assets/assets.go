@@ -93,23 +93,9 @@ func Load(ctx context.Context) (Bundle, error) {
 }
 
 func download(ctx context.Context) (Bundle, error) {
-	found, err := downloadFiles(ctx, requiredFiles, "download Apple SAP assets")
-	if err != nil {
-		return Bundle{}, err
-	}
-
-	bundle := bundleFrom(found)
-	if err := validate(bundle); err != nil {
-		return Bundle{}, err
-	}
-
-	return bundle, nil
-}
-
-func downloadFiles(ctx context.Context, specs []fileSpec, operation string) (map[string][]byte, error) {
 	parsed, err := url.Parse(updateURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Apple software update URL: %w", err)
+		return Bundle{}, fmt.Errorf("parse Apple software update URL: %w", err)
 	}
 
 	client := &http.Client{
@@ -119,17 +105,17 @@ func downloadFiles(ctx context.Context, specs []fileSpec, operation string) (map
 
 	remote, err := ranger.NewReader(&ranger.HTTPRanger{Client: client, URL: parsed})
 	if err != nil {
-		return nil, fmt.Errorf("open Apple software update: %w", err)
+		return Bundle{}, fmt.Errorf("open Apple software update: %w", err)
 	}
 
 	length, err := remote.Length()
 	if err != nil {
-		return nil, fmt.Errorf("measure Apple software update: %w", err)
+		return Bundle{}, fmt.Errorf("measure Apple software update: %w", err)
 	}
 
 	container, err := xar.NewReader(remote, length)
 	if err != nil {
-		return nil, fmt.Errorf("read Apple software update: %w", err)
+		return Bundle{}, fmt.Errorf("read Apple software update: %w", err)
 	}
 
 	var payload *xar.File
@@ -143,32 +129,32 @@ func downloadFiles(ctx context.Context, specs []fileSpec, operation string) (map
 	}
 
 	if payload == nil {
-		return nil, &fs.PathError{Op: "open", Path: payloadName, Err: fs.ErrNotExist}
+		return Bundle{}, &fs.PathError{Op: "open", Path: payloadName, Err: fs.ErrNotExist}
 	}
 
 	raw := payload.OpenRaw()
 	if _, err := raw.Seek(payloadBZOffset, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seek Apple update payload: %w", err)
+		return Bundle{}, fmt.Errorf("seek Apple update payload: %w", err)
 	}
 
 	compressed := io.MultiReader(bytes.NewReader([]byte{'B', 'Z', 'h', '9'}), raw)
 
 	archive := bzip2.NewReader(compressed)
 	if _, err := io.CopyN(io.Discard, archive, payloadCPIO); err != nil {
-		return nil, fmt.Errorf("seek Apple payload archive: %w", err)
+		return Bundle{}, fmt.Errorf("seek Apple payload archive: %w", err)
 	}
 
-	wanted := make(map[string]fileSpec, len(specs))
-	for _, spec := range specs {
+	wanted := make(map[string]fileSpec, len(requiredFiles))
+	for _, spec := range requiredFiles {
 		wanted[spec.path] = spec
 	}
 
-	found := make(map[string][]byte, len(specs))
+	found := make(map[string][]byte, len(requiredFiles))
 	reader := cpio.NewReader(archive)
 
 	for len(found) != len(wanted) {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("%s: %w", operation, err)
+			return Bundle{}, fmt.Errorf("download Apple SAP assets: %w", err)
 		}
 
 		path, body, err := reader.Next()
@@ -177,7 +163,7 @@ func downloadFiles(ctx context.Context, specs []fileSpec, operation string) (map
 		}
 
 		if err != nil {
-			return nil, fmt.Errorf("read Apple payload archive: %w", err)
+			return Bundle{}, fmt.Errorf("read Apple payload archive: %w", err)
 		}
 
 		spec, ok := wanted[path]
@@ -187,13 +173,18 @@ func downloadFiles(ctx context.Context, specs []fileSpec, operation string) (map
 
 		data, err := io.ReadAll(io.LimitReader(body, int64(spec.size)+1))
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", spec.name, err)
+			return Bundle{}, fmt.Errorf("read %s: %w", spec.name, err)
 		}
 
 		found[spec.name] = data
 	}
 
-	return found, nil
+	bundle := bundleFrom(found)
+	if err := validate(bundle); err != nil {
+		return Bundle{}, err
+	}
+
+	return bundle, nil
 }
 
 func cacheDirectory() (string, error) {

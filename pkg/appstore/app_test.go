@@ -94,6 +94,5 @@ var _ = Describe("App", func() {
 		}
 
 		Expect(fileName(app, "1.0")).To(Equal("app.bundle-id1_42_1.0.ipa"))
-		Expect(packageFileName(app, "1.0", PlatformMacOS)).To(Equal("app.bundle-id1_42_1.0.pkg"))
 	})
 })

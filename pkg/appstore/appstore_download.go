@@ -2,12 +2,10 @@ package appstore
 
 import (
 	"archive/zip"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -21,7 +19,6 @@ var (
 )
 
 type DownloadInput struct {
-	Context           context.Context
 	Account           Account
 	App               App
 	OutputPath        string
@@ -36,20 +33,11 @@ type DownloadOutput struct {
 }
 
 func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
-	macAddr, err := t.machine.MacAddress()
+	signer, guid, err := t.newActionSigner()
 	if err != nil {
-		return DownloadOutput{}, fmt.Errorf("failed to get mac address: %w", err)
+		return DownloadOutput{}, err
 	}
-
-	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
-
-	var machineGUID []byte
-	if input.Platform == PlatformMacOS {
-		guid, machineGUID, err = machineIdentity(macAddr)
-		if err != nil {
-			return DownloadOutput{}, fmt.Errorf("failed to resolve machine identity: %w", err)
-		}
-	}
+	defer signer.Close()
 
 	externalVersionID := input.ExternalVersionID
 	if externalVersionID == "" && (input.Platform == PlatformAppleTV || input.Platform == PlatformVisionOS) {
@@ -59,11 +47,40 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
 		}
 	}
 
-	req := t.downloadRequest(input.Account, input.App, guid, externalVersionID)
+	var (
+		res     http.Result[downloadResult]
+		lastErr error
+		gotRes  bool
+	)
 
-	res, err := t.downloadClient.Send(req)
-	if err != nil {
-		return DownloadOutput{}, fmt.Errorf("failed to send http request: %w", err)
+	endpoints := t.downloadEndpoints(input.Account, guid)
+	for _, endpoint := range endpoints {
+		req := t.downloadRequest(input.Account, input.App, guid, externalVersionID, signer, endpoint)
+		next, sendErr := t.downloadClient.Send(req)
+		if sendErr != nil {
+			lastErr = sendErr
+			continue
+		}
+
+		res = next
+		gotRes = true
+		lastErr = nil
+
+		if len(res.Data.Items) > 0 {
+			break
+		}
+
+		if res.Data.FailureType != "" || res.Data.CustomerMessage != "" {
+			break
+		}
+	}
+
+	if !gotRes {
+		if lastErr != nil {
+			return DownloadOutput{}, fmt.Errorf("failed to send http request: %w", lastErr)
+		}
+
+		return DownloadOutput{}, errors.New("failed to send http request")
 	}
 
 	if res.Data.FailureType == FailureTypePasswordTokenExpired ||
@@ -98,35 +115,30 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
 		version = fmt.Sprintf("%v", itemVersion)
 	}
 
-	packagePlatform, err := downloadPackagePlatform(input.Platform, item)
-	if err != nil {
-		return DownloadOutput{}, err
-	}
-
-	destination, err := t.resolveDestinationPath(input.App, version, input.OutputPath, packagePlatform)
+	destination, err := t.resolveDestinationPath(input.App, version, input.OutputPath)
 	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to resolve destination path: %w", err)
 	}
 
-	if packagePlatform == PlatformMacOS {
-		return t.downloadMacPackage(input.Context, item, destination, machineGUID, input.Progress)
-	}
-
 	tmpPath := fmt.Sprintf("%s.tmp", destination)
 
-	if err := t.downloadFile(input.Context, item.URL, tmpPath, input.Progress); err != nil {
+	err = t.downloadFile(item.URL, tmpPath, input.Progress)
+	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to download file: %w", err)
 	}
 
-	if err := t.applyPatches(item, input.Account, tmpPath, destination); err != nil {
+	err = t.applyPatches(item, input.Account, tmpPath, destination)
+	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to apply patches: %w", err)
 	}
 
-	if err := t.validatePackagePlatform(destination, input.Platform); err != nil {
+	err = t.validatePackagePlatform(destination, input.Platform)
+	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to validate package platform: %w", err)
 	}
 
-	if err := t.os.Remove(tmpPath); err != nil {
+	err = t.os.Remove(fmt.Sprintf("%s.tmp", destination))
+	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to remove file: %w", err)
 	}
 
@@ -215,18 +227,10 @@ type downloadResult struct {
 	Items           []downloadItemResult `plist:"songList,omitempty"`
 }
 
-func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *progressbar.ProgressBar) error {
+func (t *appstore) downloadFile(src, dst string, progress *progressbar.ProgressBar) error {
 	req, err := t.httpClient.NewRequest("GET", src, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if req != nil {
-		req = req.WithContext(ctx)
 	}
 
 	file, err := t.os.OpenFile(dst, os.O_CREATE|os.O_RDWR, 0644)
@@ -276,7 +280,23 @@ func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *
 	return nil
 }
 
-func (*appstore) downloadRequest(acc Account, app App, guid string, externalVersionID string) http.Request {
+func (*appstore) downloadEndpoints(acc Account, guid string) []string {
+	podPrefix := ""
+	if acc.Pod != "" {
+		podPrefix = "p" + acc.Pod + "-"
+	}
+
+	host := podPrefix + PrivateAppStoreAPIDomain
+
+	return []string{
+		fmt.Sprintf("https://%s/WebObjects/MZFinance.woa/wa/redownloadProduct?guid=%s", host, guid),
+		fmt.Sprintf("https://downloaddispatch.itunes.apple.com/r/redownload?guid=%s", guid),
+		fmt.Sprintf("https://%s%s?guid=%s", host, PrivateAppStoreAPIPathDownload, guid),
+		fmt.Sprintf("https://downloaddispatch.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=%s", guid),
+	}
+}
+
+func (*appstore) downloadRequest(acc Account, app App, guid string, externalVersionID string, signer ActionSigner, endpoint string) http.Request {
 	payload := map[string]interface{}{
 		"creditDisplay": "",
 		"guid":          guid,
@@ -286,21 +306,22 @@ func (*appstore) downloadRequest(acc Account, app App, guid string, externalVers
 
 	if externalVersionID != "" {
 		payload["externalVersionId"] = externalVersionID
-	}
-
-	podPrefix := ""
-	if acc.Pod != "" {
-		podPrefix = "p" + acc.Pod + "-"
+		payload["appExtVrsId"] = externalVersionID
+	} else if strings.Contains(endpoint, "redownloadProduct") {
+		payload["appExtVrsId"] = "0"
 	}
 
 	return http.Request{
-		URL:            fmt.Sprintf("https://%s%s%s?guid=%s", podPrefix, PrivateAppStoreAPIDomain, PrivateAppStoreAPIPathDownload, guid),
+		URL:            endpoint,
 		Method:         http.MethodPOST,
 		ResponseFormat: http.ResponseFormatXML,
+		ActionSigner:   signer,
 		Headers: map[string]string{
-			"Content-Type": "application/x-apple-plist",
-			"iCloud-DSID":  acc.DirectoryServicesID,
-			"X-Dsid":       acc.DirectoryServicesID,
+			"Content-Type":        "application/x-apple-plist",
+			"iCloud-DSID":         acc.DirectoryServicesID,
+			"X-Dsid":              acc.DirectoryServicesID,
+			"X-Apple-Store-Front": acc.StoreFront,
+			"X-Token":             acc.PasswordToken,
 		},
 		Payload: &http.XMLPayload{
 			Content: payload,
@@ -309,10 +330,6 @@ func (*appstore) downloadRequest(acc Account, app App, guid string, externalVers
 }
 
 func fileName(app App, version string) string {
-	return packageFileName(app, version, "")
-}
-
-func packageFileName(app App, version string, platform Platform) string {
 	var parts []string
 
 	if app.BundleID != "" {
@@ -327,16 +344,11 @@ func packageFileName(app App, version string, platform Platform) string {
 		parts = append(parts, version)
 	}
 
-	extension := "ipa"
-	if platform == PlatformMacOS {
-		extension = "pkg"
-	}
-
-	return fmt.Sprintf("%s.%s", strings.Join(parts, "_"), extension)
+	return fmt.Sprintf("%s.ipa", strings.Join(parts, "_"))
 }
 
-func (t *appstore) resolveDestinationPath(app App, version string, path string, platform Platform) (string, error) {
-	file := packageFileName(app, version, platform)
+func (t *appstore) resolveDestinationPath(app App, version string, path string) (string, error) {
+	file := fileName(app, version)
 
 	if path == "" {
 		workdir, err := t.os.Getwd()
@@ -353,7 +365,7 @@ func (t *appstore) resolveDestinationPath(app App, version string, path string, 
 	}
 
 	if isDir {
-		return filepath.Join(path, file), nil
+		return fmt.Sprintf("%s/%s", path, file), nil
 	}
 
 	return path, nil

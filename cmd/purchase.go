@@ -11,31 +11,17 @@ import (
 
 // nolint:wrapcheck
 func purchaseCmd() *cobra.Command {
-	return purchaseCmdWithAppStore(func() appstore.AppStore { return dependencies.AppStore })
-}
-
-//nolint:wrapcheck
-func purchaseCmdWithAppStore(appStore func() appstore.AppStore) *cobra.Command {
-	var (
-		bundleID      string
-		platformValue string
-	)
+	var bundleID string
 
 	cmd := &cobra.Command{
 		Use:   "purchase",
 		Short: "Obtain a license for the app from the App Store",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			platform, err := appstore.ParsePlatform(platformValue)
-			if err != nil {
-				return err
-			}
-
 			var lastErr error
 			var acc appstore.Account
 
 			return retry.Do(func() error {
-				store := appStore()
-				infoResult, err := store.AccountInfo()
+				infoResult, err := dependencies.AppStore.AccountInfo()
 				if err != nil {
 					return err
 				}
@@ -43,7 +29,7 @@ func purchaseCmdWithAppStore(appStore func() appstore.AppStore) *cobra.Command {
 				acc = infoResult.Account
 
 				if errors.Is(lastErr, appstore.ErrPasswordTokenExpired) {
-					loginResult, err := store.Login(appstore.LoginInput{
+					loginResult, err := dependencies.AppStore.Login(appstore.LoginInput{
 						Email:    acc.Email,
 						Password: acc.Password,
 					})
@@ -54,20 +40,12 @@ func purchaseCmdWithAppStore(appStore func() appstore.AppStore) *cobra.Command {
 					acc = loginResult.Account
 				}
 
-				lookupResult, err := store.Lookup(appstore.LookupInput{
-					Account:  acc,
-					BundleID: bundleID,
-					Platform: platform,
-				})
+				lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: acc, BundleID: bundleID})
 				if err != nil {
 					return err
 				}
 
-				err = store.Purchase(appstore.PurchaseInput{
-					Account:  acc,
-					App:      lookupResult.App,
-					Platform: platform,
-				})
+				err = dependencies.AppStore.Purchase(appstore.PurchaseInput{Account: acc, App: lookupResult.App})
 				if err != nil && !errors.Is(err, appstore.ErrLicenseAlreadyExists) {
 					return err
 				}
@@ -92,8 +70,7 @@ func purchaseCmdWithAppStore(appStore func() appstore.AppStore) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&bundleID, "bundle-identifier", "b", "", "Bundle identifier of the target app (required)")
-	cmd.Flags().StringVar(&platformValue, "platform", "", "Platform to purchase for: iphone (iOS), ipad (iPadOS), appletv (tvOS), visionos, or macos")
+	cmd.Flags().StringVarP(&bundleID, "bundle-identifier", "b", "", "Bundle identifier of the target iOS app (required)")
 	_ = cmd.MarkFlagRequired("bundle-identifier")
 
 	return cmd

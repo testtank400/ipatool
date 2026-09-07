@@ -23,9 +23,6 @@ var _ = Describe("Platform", func() {
 		Entry("Vision Pro", "visionpro", PlatformVisionOS),
 		Entry("xrOS", "xrOS", PlatformVisionOS),
 		Entry("realityDevice", "realityDevice", PlatformVisionOS),
-		Entry("Mac", "mac", PlatformMacOS),
-		Entry("macOS", "macOS", PlatformMacOS),
-		Entry("OS X", "osx", PlatformMacOS),
 	)
 
 	DescribeTable("maps platforms to lookup entities",
@@ -39,7 +36,6 @@ var _ = Describe("Platform", func() {
 		Entry("iPad", PlatformIPad, "iPadSoftware"),
 		Entry("Apple TV", PlatformAppleTV, "tvSoftware"),
 		Entry("visionOS", PlatformVisionOS, "xrosSoftware"),
-		Entry("macOS", PlatformMacOS, "macSoftware"),
 	)
 
 	DescribeTable("maps platforms to search entities",
@@ -53,7 +49,6 @@ var _ = Describe("Platform", func() {
 		Entry("iPad", PlatformIPad, "iPadSoftware"),
 		Entry("Apple TV", PlatformAppleTV, "software,tvSoftware"),
 		Entry("visionOS", PlatformVisionOS, "xrosSoftware"),
-		Entry("macOS", PlatformMacOS, "macSoftware"),
 	)
 
 	DescribeTable("maps platforms to metadata platforms",
