@@ -1,56 +1,44 @@
 package appstore
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"strings"
-
-	"github.com/majd/ipatool/v2/pkg/http"
+	"sync"
 )
 
+const versionMetadataWorkers = 8
+
 type ListVersionsInput struct {
-	Account Account
-	App     App
+	Account         Account
+	App             App
+	ResolveMetadata bool
+	Page            int
+	MaxResults      int
 }
 
 type ListVersionsOutput struct {
 	ExternalVersionIdentifiers []string
 	LatestExternalVersionID    string
+	Versions                   []ListedVersion
+	Page                       int
+	TotalCount                 int
 }
 
 func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, error) {
-	macAddr, err := t.machine.MacAddress()
+	signer, guid, err := t.newActionSigner()
 	if err != nil {
-		return ListVersionsOutput{}, fmt.Errorf("failed to get mac address: %w", err)
+		return ListVersionsOutput{}, err
 	}
+	defer signer.Close()
 
-	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
-
-	req := t.listVersionsRequest(input.Account, input.App, guid)
-	res, err := t.downloadClient.Send(req)
-
+	res, err := t.sendDownloadProduct(input.Account, input.App, guid, "", signer)
 	if err != nil {
-		return ListVersionsOutput{}, fmt.Errorf("failed to send http request: %w", err)
+		return ListVersionsOutput{}, err
 	}
 
-	if res.Data.FailureType == FailureTypePasswordTokenExpired || res.Data.FailureType == FailureTypeSignInRequired {
-		return ListVersionsOutput{}, ErrPasswordTokenExpired
-	}
-
-	if res.Data.FailureType == FailureTypeLicenseNotFound {
-		return ListVersionsOutput{}, ErrLicenseRequired
-	}
-
-	if res.Data.FailureType != "" && res.Data.CustomerMessage != "" {
-		return ListVersionsOutput{}, NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.CustomerMessage), res)
-	}
-
-	if res.Data.FailureType != "" {
-		return ListVersionsOutput{}, NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.FailureType), res)
-	}
-
-	if len(res.Data.Items) == 0 {
-		return ListVersionsOutput{}, NewErrorWithMetadata(errors.New("invalid response"), res)
+	if err := interpretDownloadResult(res); err != nil {
+		return ListVersionsOutput{}, err
 	}
 
 	item := res.Data.Items[0]
@@ -60,9 +48,9 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
 		return ListVersionsOutput{}, NewErrorWithMetadata(fmt.Errorf("failed to get version identifiers from item metadata"), item.Metadata)
 	}
 
-	externalVersionIdentifiers := make([]string, len(rawIdentifiers))
+	allIdentifiers := make([]string, len(rawIdentifiers))
 	for i, val := range rawIdentifiers {
-		externalVersionIdentifiers[i] = fmt.Sprintf("%v", val)
+		allIdentifiers[i] = fmt.Sprintf("%v", val)
 	}
 
 	latestExternalVersionID := item.Metadata["softwareVersionExternalIdentifier"]
@@ -70,36 +58,146 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
 		return ListVersionsOutput{}, NewErrorWithMetadata(fmt.Errorf("failed to get latest version from item metadata"), item.Metadata)
 	}
 
-	return ListVersionsOutput{
-		ExternalVersionIdentifiers: externalVersionIdentifiers,
+	page := input.Page
+	if page == 0 {
+		page = 1
+	}
+
+	pageIdentifiers, err := paginateVersionIDs(allIdentifiers, page, input.MaxResults)
+	if err != nil {
+		return ListVersionsOutput{}, err
+	}
+
+	output := ListVersionsOutput{
+		ExternalVersionIdentifiers: pageIdentifiers,
 		LatestExternalVersionID:    fmt.Sprintf("%v", latestExternalVersionID),
-	}, nil
+		Page:                       page,
+		TotalCount:                 len(allIdentifiers),
+	}
+
+	if !input.ResolveMetadata {
+		return output, nil
+	}
+
+	output.Versions, err = t.resolveVersionMetadata(input.Account, input.App, guid, signer, pageIdentifiers)
+	if err != nil {
+		return ListVersionsOutput{}, err
+	}
+
+	return output, nil
 }
 
-func (t *appstore) listVersionsRequest(acc Account, app App, guid string) http.Request {
-	payload := map[string]interface{}{
-		"creditDisplay": "",
-		"guid":          guid,
-		"salableAdamId": app.ID,
-		"serialNumber":  "0",
+func paginateVersionIDs(ids []string, page, maxResults int) ([]string, error) {
+	if page < 1 {
+		return nil, errors.New("page must be greater than 0")
 	}
 
-	podPrefix := ""
-	if acc.Pod != "" {
-		podPrefix = "p" + acc.Pod + "-"
+	if maxResults < 0 {
+		return nil, errors.New("max-results must not be negative")
 	}
 
-	return http.Request{
-		URL:            fmt.Sprintf("https://%s%s%s?guid=%s", podPrefix, PrivateAppStoreAPIDomain, PrivateAppStoreAPIPathDownload, guid),
-		Method:         http.MethodPOST,
-		ResponseFormat: http.ResponseFormatXML,
-		Headers: map[string]string{
-			"Content-Type": "application/x-apple-plist",
-			"iCloud-DSID":  acc.DirectoryServicesID,
-			"X-Dsid":       acc.DirectoryServicesID,
-		},
-		Payload: &http.XMLPayload{
-			Content: payload,
-		},
+	if maxResults == 0 {
+		return ids, nil
 	}
+
+	newestFirst := reverseStrings(ids)
+	start := (page - 1) * maxResults
+	if start >= len(newestFirst) {
+		return []string{}, nil
+	}
+
+	end := start + maxResults
+	if end > len(newestFirst) {
+		end = len(newestFirst)
+	}
+
+	return newestFirst[start:end], nil
+}
+
+func reverseStrings(ids []string) []string {
+	reversed := make([]string, len(ids))
+	for i, id := range ids {
+		reversed[len(ids)-1-i] = id
+	}
+
+	return reversed
+}
+
+func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, signer ActionSigner, ids []string) ([]ListedVersion, error) {
+	if len(ids) == 0 {
+		return []ListedVersion{}, nil
+	}
+
+	versions := make([]ListedVersion, len(ids))
+	workers := versionMetadataWorkers
+	if len(ids) < workers {
+		workers = len(ids)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jobs := make(chan int)
+	var (
+		wg       sync.WaitGroup
+		fatalMu  sync.Mutex
+		fatalErr error
+	)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for index := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+
+				listed := ListedVersion{ExternalVersionID: ids[index]}
+				metadata, metaErr := t.getVersionMetadata(acc, app, guid, ids[index], signer)
+				if metaErr != nil {
+					if errors.Is(metaErr, ErrPasswordTokenExpired) || errors.Is(metaErr, ErrLicenseRequired) {
+						fatalMu.Lock()
+						if fatalErr == nil {
+							fatalErr = metaErr
+							cancel()
+						}
+						fatalMu.Unlock()
+
+						return
+					}
+
+					listed.Error = metaErr.Error()
+					versions[index] = listed
+
+					continue
+				}
+
+				listed.DisplayVersion = metadata.DisplayVersion
+				listed.ReleaseDate = metadata.ReleaseDate
+				versions[index] = listed
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobs)
+
+		for index := range ids {
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- index:
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if fatalErr != nil {
+		return nil, fatalErr
+	}
+
+	return versions, nil
 }

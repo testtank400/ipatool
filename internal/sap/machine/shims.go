@@ -51,7 +51,15 @@ type shims struct {
 	iterator    uint32
 }
 
+type shimOptions struct {
+	zeroReturnAliases []string
+}
+
 func newShims(engine *unicorn.Engine, coreExports map[string]uint64, icxs []byte) (*shims, error) {
+	return newShimsWithOptions(engine, coreExports, icxs, shimOptions{})
+}
+
+func newShimsWithOptions(engine *unicorn.Engine, coreExports map[string]uint64, icxs []byte, options shimOptions) (*shims, error) {
 	if err := engine.MemMap(shimBase, shimSize); err != nil {
 		return nil, fmt.Errorf("map guest service area: %w", err)
 	}
@@ -71,6 +79,10 @@ func newShims(engine *unicorn.Engine, coreExports map[string]uint64, icxs []byte
 	}
 
 	if err := s.registerPlatformServices(); err != nil {
+		return nil, err
+	}
+
+	if err := s.addAliases(options.zeroReturnAliases, s.returnZero); err != nil {
 		return nil, err
 	}
 

@@ -28,6 +28,29 @@ type VersionDetails struct {
 	Error         string
 }
 
+type ListedVersion struct {
+	ExternalVersionID string    `json:"externalVersionID"`
+	DisplayVersion    string    `json:"displayVersion,omitempty"`
+	ReleaseDate       time.Time `json:"releaseDate,omitzero"`
+	Error             string    `json:"error,omitempty"`
+}
+
+func (v ListedVersion) MarshalZerologObject(event *zerolog.Event) {
+	event.Str("externalVersionID", v.ExternalVersionID)
+
+	if v.DisplayVersion != "" {
+		event.Str("displayVersion", v.DisplayVersion)
+	}
+
+	if !v.ReleaseDate.IsZero() {
+		event.Time("releaseDate", v.ReleaseDate)
+	}
+
+	if v.Error != "" {
+		event.Str("error", v.Error)
+	}
+}
+
 type Apps []App
 
 func (apps Apps) MarshalZerologArray(a *zerolog.Array) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"howett.net/plist"
 )
@@ -33,6 +34,7 @@ type Client[R interface{}] interface {
 type client[R interface{}] struct {
 	internalClient http.Client
 	cookieJar      CookieJar
+	saveMu         sync.Mutex
 }
 
 type Args struct {
@@ -126,7 +128,9 @@ func (c *client[R]) Send(req Request) (Result[R], error) {
 	}
 	defer res.Body.Close()
 
+	c.saveMu.Lock()
 	err = c.cookieJar.Save()
+	c.saveMu.Unlock()
 	if err != nil {
 		return Result[R]{}, fmt.Errorf("failed to save cookies: %w", err)
 	}

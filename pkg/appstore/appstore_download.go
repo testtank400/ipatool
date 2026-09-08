@@ -2,6 +2,7 @@ package appstore
 
 import (
 	"archive/zip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -47,63 +48,13 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
 		}
 	}
 
-	var (
-		res     http.Result[downloadResult]
-		lastErr error
-		gotRes  bool
-	)
-
-	endpoints := t.downloadEndpoints(input.Account, guid)
-	for _, endpoint := range endpoints {
-		req := t.downloadRequest(input.Account, input.App, guid, externalVersionID, signer, endpoint)
-		next, sendErr := t.downloadClient.Send(req)
-		if sendErr != nil {
-			lastErr = sendErr
-			continue
-		}
-
-		res = next
-		gotRes = true
-		lastErr = nil
-
-		if len(res.Data.Items) > 0 {
-			break
-		}
-
-		if res.Data.FailureType != "" || res.Data.CustomerMessage != "" {
-			break
-		}
+	res, err := t.sendDownloadProduct(input.Account, input.App, guid, externalVersionID, signer)
+	if err != nil {
+		return DownloadOutput{}, err
 	}
 
-	if !gotRes {
-		if lastErr != nil {
-			return DownloadOutput{}, fmt.Errorf("failed to send http request: %w", lastErr)
-		}
-
-		return DownloadOutput{}, errors.New("failed to send http request")
-	}
-
-	if res.Data.FailureType == FailureTypePasswordTokenExpired ||
-		res.Data.FailureType == FailureTypeSignInRequired ||
-		res.Data.FailureType == FailureTypeDeviceVerificationFailed ||
-		res.Data.FailureType == FailureTypeLicenseAlreadyExists {
-		return DownloadOutput{}, ErrPasswordTokenExpired
-	}
-
-	if res.Data.FailureType == FailureTypeLicenseNotFound {
-		return DownloadOutput{}, ErrLicenseRequired
-	}
-
-	if res.Data.FailureType != "" && res.Data.CustomerMessage != "" {
-		return DownloadOutput{}, NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.CustomerMessage), res)
-	}
-
-	if res.Data.FailureType != "" {
-		return DownloadOutput{}, NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.FailureType), res)
-	}
-
-	if len(res.Data.Items) == 0 {
-		return DownloadOutput{}, NewErrorWithMetadata(errors.New("invalid response"), res)
+	if err := interpretDownloadResult(res); err != nil {
+		return DownloadOutput{}, err
 	}
 
 	item := res.Data.Items[0]
@@ -122,7 +73,7 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
 
 	tmpPath := fmt.Sprintf("%s.tmp", destination)
 
-	err = t.downloadFile(item.URL, tmpPath, input.Progress)
+	err = t.downloadFile(context.Background(), item.URL, tmpPath, input.Progress)
 	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to download file: %w", err)
 	}
@@ -227,10 +178,18 @@ type downloadResult struct {
 	Items           []downloadItemResult `plist:"songList,omitempty"`
 }
 
-func (t *appstore) downloadFile(src, dst string, progress *progressbar.ProgressBar) error {
+func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *progressbar.ProgressBar) error {
 	req, err := t.httpClient.NewRequest("GET", src, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if req != nil {
+		req = req.WithContext(ctx)
 	}
 
 	file, err := t.os.OpenFile(dst, os.O_CREATE|os.O_RDWR, 0644)
@@ -275,6 +234,72 @@ func (t *appstore) downloadFile(src, dst string, progress *progressbar.ProgressB
 
 	if err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+func (t *appstore) sendDownloadProduct(acc Account, app App, guid string, externalVersionID string, signer ActionSigner) (http.Result[downloadResult], error) {
+	var (
+		res     http.Result[downloadResult]
+		lastErr error
+		gotRes  bool
+	)
+
+	for _, endpoint := range t.downloadEndpoints(acc, guid) {
+		req := t.downloadRequest(acc, app, guid, externalVersionID, signer, endpoint)
+		next, sendErr := t.downloadClient.Send(req)
+		if sendErr != nil {
+			lastErr = sendErr
+			continue
+		}
+
+		res = next
+		gotRes = true
+		lastErr = nil
+
+		if len(res.Data.Items) > 0 {
+			break
+		}
+
+		if res.Data.FailureType != "" || res.Data.CustomerMessage != "" {
+			break
+		}
+	}
+
+	if !gotRes {
+		if lastErr != nil {
+			return http.Result[downloadResult]{}, fmt.Errorf("failed to send http request: %w", lastErr)
+		}
+
+		return http.Result[downloadResult]{}, errors.New("failed to send http request")
+	}
+
+	return res, nil
+}
+
+func interpretDownloadResult(res http.Result[downloadResult]) error {
+	if res.Data.FailureType == FailureTypePasswordTokenExpired ||
+		res.Data.FailureType == FailureTypeSignInRequired ||
+		res.Data.FailureType == FailureTypeDeviceVerificationFailed ||
+		res.Data.FailureType == FailureTypeLicenseAlreadyExists {
+		return ErrPasswordTokenExpired
+	}
+
+	if res.Data.FailureType == FailureTypeLicenseNotFound {
+		return ErrLicenseRequired
+	}
+
+	if res.Data.FailureType != "" && res.Data.CustomerMessage != "" {
+		return NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.CustomerMessage), res)
+	}
+
+	if res.Data.FailureType != "" {
+		return NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.FailureType), res)
+	}
+
+	if len(res.Data.Items) == 0 {
+		return NewErrorWithMetadata(errors.New("invalid response"), res)
 	}
 
 	return nil

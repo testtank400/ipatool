@@ -48,6 +48,7 @@ type appstore struct {
 	bagClient           http.Client[bagResult]
 	ownedAppsClient     http.Client[[]byte]
 	httpClient          http.Client[interface{}]
+	macDecrypterFactory macPackageDecrypterFactory
 	actionSignerFactory ActionSignerFactory
 	authRetrySleep      func(time.Duration)
 	machine             machine.Machine
@@ -83,6 +84,7 @@ func NewAppStore(args Args) AppStore {
 		bagClient:           http.NewClient[bagResult](clientArgs),
 		ownedAppsClient:     http.NewClient[[]byte](clientArgs),
 		httpClient:          http.NewClient[interface{}](clientArgs),
+		macDecrypterFactory: defaultMacPackageDecrypterFactory,
 		actionSignerFactory: actionSignerFactory,
 		authRetrySleep:      time.Sleep,
 		machine:             args.Machine,
