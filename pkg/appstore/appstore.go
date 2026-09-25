@@ -53,6 +53,7 @@ type appstore struct {
 	authRetrySleep      func(time.Duration)
 	machine             machine.Machine
 	os                  operatingsystem.OperatingSystem
+	cookieJar           http.CookieJar
 }
 
 type Args struct {
@@ -89,5 +90,6 @@ func NewAppStore(args Args) AppStore {
 		authRetrySleep:      time.Sleep,
 		machine:             args.Machine,
 		os:                  args.OperatingSystem,
+		cookieJar:           args.CookieJar,
 	}
 }

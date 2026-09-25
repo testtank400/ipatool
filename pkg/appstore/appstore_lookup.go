@@ -36,7 +36,7 @@ func (t *appstore) Lookup(input LookupInput) (LookupOutput, error) {
 	}
 
 	if res.StatusCode != gohttp.StatusOK {
-		return LookupOutput{}, NewErrorWithMetadata(errors.New("invalid response"), res)
+		return LookupOutput{}, NewErrorWithMetadata(errors.New("invalid response: iTunes lookup returned non-OK status"), res)
 	}
 
 	if len(res.Data.Results) == 0 {

@@ -1,0 +1,20 @@
+{
+  "name": "ipatool-ui",
+  "outputfilename": "ipatool-ui",
+  "frontend:dir": "./frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "Blake",
+    "email": ""
+  },
+  "info": {
+    "companyName": "ipatool",
+    "productName": "ipatool",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright MIT",
+    "comments": "Desktop UI for ipatool"
+  }
+}

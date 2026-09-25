@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ipatool</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>ipatool</h1>
+      <p id="account-badge" class="muted">Not signed in</p>
+    </header>
+
+    <nav class="tabs">
+      <button type="button" class="tab active" data-tab="login">Login</button>
+      <button type="button" class="tab" data-tab="search">Search</button>
+      <button type="button" class="tab" data-tab="download">Download</button>
+    </nav>
+
+    <section id="panel-login" class="panel active">
+      <h2>Sign in</h2>
+      <form id="login-form">
+        <label>Apple ID email
+          <input type="email" id="email" autocomplete="username" required />
+        </label>
+        <label>Password
+          <input type="password" id="password" autocomplete="current-password" required />
+        </label>
+        <label>2FA code <span class="muted">(if required)</span>
+          <input type="text" id="authCode" inputmode="numeric" autocomplete="one-time-code" />
+        </label>
+        <label>Keychain passphrase
+          <input type="password" id="keychainPassphrase" autocomplete="off" required />
+        </label>
+        <div class="row">
+          <button type="submit" id="login-btn">Login</button>
+          <button type="button" id="revoke-btn" class="secondary">Revoke</button>
+        </div>
+      </form>
+      <p id="login-status" class="status"></p>
+    </section>
+
+    <section id="panel-search" class="panel">
+      <h2>Search</h2>
+      <form id="search-form" class="row-form">
+        <input type="text" id="search-term" placeholder="App name or keyword" required />
+        <input type="number" id="search-limit" value="10" min="1" max="50" title="Limit" />
+        <select id="search-platform">
+          <option value="">default</option>
+          <option value="iphone">iphone</option>
+          <option value="ipad">ipad</option>
+          <option value="appletv">appletv</option>
+          <option value="visionos">visionos</option>
+        </select>
+        <button type="submit">Search</button>
+      </form>
+      <p id="search-status" class="status"></p>
+      <ul id="search-results" class="results"></ul>
+    </section>
+
+    <section id="panel-download" class="panel">
+      <h2>Download</h2>
+      <form id="download-form">
+        <label>App ID
+          <input type="number" id="dl-app-id" />
+        </label>
+        <label>Bundle ID <span class="muted">(overrides App ID)</span>
+          <input type="text" id="dl-bundle-id" placeholder="com.example.app" />
+        </label>
+        <label>Output folder
+          <div class="path-row">
+            <input type="text" id="dl-output" placeholder="C:\Downloads" />
+            <button type="button" id="dl-browse" class="secondary">Browse</button>
+          </div>
+        </label>
+        <label>External version ID
+          <input type="text" id="dl-external-version-id" inputmode="numeric" autocomplete="off" placeholder="890891604" />
+        </label>
+        <p class="field-hint muted">Apple history listing may fail for some apps. Paste an ID from prior IPA metadata or a known version ID — Download uses this when filled (even if Load versions fails).</p>
+        <label>Version history <span class="muted">(optional)</span>
+          <select id="dl-version">
+            <option value="">Latest</option>
+          </select>
+        </label>
+        <div class="row version-actions">
+          <button type="button" id="dl-load-versions" class="secondary">Load versions</button>
+          <label class="inline-check">
+            <input type="checkbox" id="dl-resolve-versions" />
+            Load details (slow)
+          </label>
+        </div>
+        <div class="row version-pager" id="version-pager" hidden>
+          <button type="button" id="dl-versions-prev" class="secondary" disabled>Prev</button>
+          <span id="version-page-label" class="muted">Page 1</span>
+          <button type="button" id="dl-versions-next" class="secondary" disabled>Next</button>
+        </div>
+        <p id="version-status" class="status muted"></p>
+        <label>Platform
+          <select id="dl-platform">
+            <option value="">default</option>
+            <option value="iphone">iphone</option>
+            <option value="ipad">ipad</option>
+            <option value="appletv">appletv</option>
+            <option value="visionos">visionos</option>
+          </select>
+        </label>
+        <button type="submit" id="download-btn">Download</button>
+      </form>
+      <div class="progress-wrap">
+        <div id="progress-bar" class="progress-bar"></div>
+      </div>
+      <p id="download-status" class="status"></p>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

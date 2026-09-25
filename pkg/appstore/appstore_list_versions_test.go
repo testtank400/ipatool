@@ -515,8 +515,10 @@ var _ = Describe("AppStore (ListVersions)", func() {
 				}).
 				AnyTimes()
 
-			_, err := as.ListVersions(ListVersionsInput{ResolveMetadata: true})
-			Expect(err).To(Equal(ErrPasswordTokenExpired))
+			out, err := as.ListVersions(ListVersionsInput{ResolveMetadata: true})
+			Expect(err).To(MatchError(ErrPasswordTokenExpired))
+			Expect(out.ExternalVersionIdentifiers).To(Equal([]string{testVersion1, testVersion2}))
+			Expect(out.TotalCount).To(Equal(2))
 		})
 
 		It("resolves only the newest page when paginated", func() {
@@ -591,7 +593,55 @@ var _ = Describe("AppStore (ListVersions)", func() {
 
 		It("rejects an invalid page", func() {
 			_, err := as.ListVersions(ListVersionsInput{Page: -1, MaxResults: 2})
-			Expect(err).To(MatchError("page must be greater than 0"))
+			Expect(err.Error()).To(ContainSubstring("page must be greater than 0"))
+		})
+	})
+
+
+	When("the first endpoint returns empty songList with only a customerMessage", func() {
+		BeforeEach(func() {
+			expectActionSignerSetup(mockMachine, mockBagClient)
+
+			mockDownloadClient.EXPECT().
+				Send(gomock.Any()).
+				Return(http.Result[downloadResult]{
+					Data: downloadResult{
+						CustomerMessage: "try another host",
+						Items:           []downloadItemResult{},
+					},
+				}, nil)
+		})
+
+		It("stops on customerMessage and surfaces it with empty songList", func() {
+			_, err := as.ListVersions(ListVersionsInput{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(HavePrefix("list history:"))
+			Expect(errors.Is(err, ErrEmptySongList)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("try another host"))
+		})
+	})
+
+
+	When("history fetch fails with empty songList", func() {
+		BeforeEach(func() {
+			expectActionSignerSetup(mockMachine, mockBagClient)
+
+			mockDownloadClient.EXPECT().
+				Send(gomock.Any()).
+				Return(http.Result[downloadResult]{
+					Data: downloadResult{
+						Items: []downloadItemResult{},
+					},
+				}, nil).
+				Times(4)
+		})
+
+		It("prefixes the error with list history", func() {
+			_, err := as.ListVersions(ListVersionsInput{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(HavePrefix("list history:"))
+			Expect(errors.Is(err, ErrEmptySongList)).To(BeTrue())
 		})
 	})
 })
+

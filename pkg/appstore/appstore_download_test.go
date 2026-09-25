@@ -118,7 +118,7 @@ var _ = Describe("AppStore (Download)", func() {
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
 				Do(func(req http.Request) {
-					expectedURL := "https://p" + testPod + "-" + PrivateAppStoreAPIDomain + PrivateAppStoreAPIPathDownload + "?guid=" + testGUID
+					expectedURL := "https://p" + testPod + "-" + PrivateAppStoreAPIDomain + "/WebObjects/MZFinance.woa/wa/redownloadProduct?guid=" + testGUID
 					Expect(req.URL).To(Equal(expectedURL))
 				}).
 				Return(http.Result[downloadResult]{}, errors.New(""))

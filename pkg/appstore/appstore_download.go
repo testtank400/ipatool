@@ -17,6 +17,8 @@ import (
 
 var (
 	ErrLicenseRequired = errors.New("license is required")
+	// ErrEmptySongList is returned when every download endpoint answered without songList items.
+	ErrEmptySongList = errors.New("invalid response: App Store returned no download items (empty songList)")
 )
 
 type DownloadInput struct {
@@ -34,6 +36,8 @@ type DownloadOutput struct {
 }
 
 func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
+	input.Account = t.ensureAccountPod(input.Account)
+
 	signer, guid, err := t.newActionSigner()
 	if err != nil {
 		return DownloadOutput{}, err
@@ -299,7 +303,14 @@ func interpretDownloadResult(res http.Result[downloadResult]) error {
 	}
 
 	if len(res.Data.Items) == 0 {
-		return NewErrorWithMetadata(errors.New("invalid response"), res)
+		// Apple returns an empty songList when the signed download request is
+		// rejected, the external version is unavailable, or the session cannot
+		// redownload that build. Preserve any customerMessage so callers can see why.
+		err := ErrEmptySongList
+		if res.Data.CustomerMessage != "" {
+			err = fmt.Errorf("%w: %s", ErrEmptySongList, res.Data.CustomerMessage)
+		}
+		return NewErrorWithMetadata(err, res)
 	}
 
 	return nil

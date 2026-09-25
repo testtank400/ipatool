@@ -7,7 +7,13 @@ import (
 	"sync"
 )
 
-const versionMetadataWorkers = 8
+const (
+	versionMetadataWorkers = 8
+	// DefaultVersionResolvePageSize is the recommended --max-results when
+	// ResolveMetadata is set. Resolving every historical ID at once is too slow
+	// (each ID hits the download API and reads Info.plist from the IPA).
+	DefaultVersionResolvePageSize = 10
+)
 
 type ListVersionsInput struct {
 	Account         Account
@@ -26,12 +32,34 @@ type ListVersionsOutput struct {
 }
 
 func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, error) {
+	input.Account = t.ensureAccountPod(input.Account)
+
 	signer, guid, err := t.newActionSigner()
 	if err != nil {
-		return ListVersionsOutput{}, err
+		return ListVersionsOutput{}, fmt.Errorf("list history: %w", err)
 	}
 	defer signer.Close()
 
+	output, err := t.listVersionHistory(input, guid, signer)
+	if err != nil {
+		return output, fmt.Errorf("list history: %w", err)
+	}
+
+	if !input.ResolveMetadata {
+		return output, nil
+	}
+
+	output.Versions, err = t.resolveVersionMetadata(input.Account, input.App, guid, signer, output.ExternalVersionIdentifiers)
+	if err != nil {
+		// Keep identifiers so callers can still show the page of version IDs
+		// when metadata resolve fails (token expiry, license, etc.).
+		return output, fmt.Errorf("resolve versions: %w", err)
+	}
+
+	return output, nil
+}
+
+func (t *appstore) listVersionHistory(input ListVersionsInput, guid string, signer ActionSigner) (ListVersionsOutput, error) {
 	res, err := t.sendDownloadProduct(input.Account, input.App, guid, "", signer)
 	if err != nil {
 		return ListVersionsOutput{}, err
@@ -68,23 +96,12 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
 		return ListVersionsOutput{}, err
 	}
 
-	output := ListVersionsOutput{
+	return ListVersionsOutput{
 		ExternalVersionIdentifiers: pageIdentifiers,
 		LatestExternalVersionID:    fmt.Sprintf("%v", latestExternalVersionID),
 		Page:                       page,
 		TotalCount:                 len(allIdentifiers),
-	}
-
-	if !input.ResolveMetadata {
-		return output, nil
-	}
-
-	output.Versions, err = t.resolveVersionMetadata(input.Account, input.App, guid, signer, pageIdentifiers)
-	if err != nil {
-		return ListVersionsOutput{}, err
-	}
-
-	return output, nil
+	}, nil
 }
 
 func paginateVersionIDs(ids []string, page, maxResults int) ([]string, error) {
@@ -160,7 +177,7 @@ func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, sig
 					if errors.Is(metaErr, ErrPasswordTokenExpired) || errors.Is(metaErr, ErrLicenseRequired) {
 						fatalMu.Lock()
 						if fatalErr == nil {
-							fatalErr = metaErr
+							fatalErr = fmt.Errorf("resolve version %s: %w", ids[index], metaErr)
 							cancel()
 						}
 						fatalMu.Unlock()
@@ -168,7 +185,7 @@ func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, sig
 						return
 					}
 
-					listed.Error = metaErr.Error()
+					listed.Error = fmt.Sprintf("resolve version %s: %s", ids[index], metaErr.Error())
 					versions[index] = listed
 
 					continue
@@ -201,3 +218,4 @@ func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, sig
 
 	return versions, nil
 }
+
