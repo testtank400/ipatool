@@ -14,6 +14,43 @@
     if (kind) el.classList.add(kind);
   }
 
+  const OUTPUT_PATH_STORAGE_KEY = "ipatool.outputFolder";
+
+  function saveOutputPath() {
+    try {
+      const path = $("dl-output").value.trim();
+      if (path) {
+        localStorage.setItem(OUTPUT_PATH_STORAGE_KEY, path);
+      } else {
+        localStorage.removeItem(OUTPUT_PATH_STORAGE_KEY);
+      }
+    } catch (_) {
+      // localStorage may be unavailable; the field still works for this session.
+    }
+  }
+
+  function restoreOutputPath() {
+    try {
+      const path = localStorage.getItem(OUTPUT_PATH_STORAGE_KEY);
+      if (path && path.trim()) {
+        $("dl-output").value = path;
+        const app = window.go && window.go.main && window.go.main.App;
+        if (app && app.OutputDirectoryExists) {
+          app.OutputDirectoryExists(path).then((exists) => {
+            if (!exists && $("dl-output").value.trim() === path) {
+              $("dl-output").value = "";
+              localStorage.removeItem(OUTPUT_PATH_STORAGE_KEY);
+            }
+          }).catch(() => {});
+        }
+      } else if (path) {
+        localStorage.removeItem(OUTPUT_PATH_STORAGE_KEY);
+      }
+    } catch (_) {
+      // Ignore unavailable or invalid persisted settings.
+    }
+  }
+
   function switchTab(name) {
     document.querySelectorAll(".tab").forEach((t) => {
       t.classList.toggle("active", t.dataset.tab === name);
@@ -271,10 +308,17 @@
     const v = $("dl-version").value.trim();
     if (v) $("dl-external-version-id").value = v;
   });
+  const outputInput = $("dl-output");
+  outputInput.addEventListener("change", saveOutputPath);
+  outputInput.addEventListener("blur", saveOutputPath);
+
   $("dl-browse").addEventListener("click", async () => {
     try {
       const path = await go().SelectOutputPath();
-      if (path) $("dl-output").value = path;
+      if (path) {
+        outputInput.value = path;
+        saveOutputPath();
+      }
     } catch (err) {
       setStatus($("download-status"), String(err), "error");
     }
@@ -334,6 +378,7 @@
   }
 
   onReady(() => {
+    restoreOutputPath();
     if (!window.runtime || !window.runtime.EventsOn) return;
     window.runtime.EventsOn("download:start", () => {
       bar.classList.add("indeterminate");
@@ -384,6 +429,7 @@
     try {
       const passphrase = $("keychainPassphrase").value;
       if (passphrase) go().SetKeychainPassphrase(passphrase);
+      saveOutputPath();
       const appID = parseInt($("dl-app-id").value, 10) || 0;
       const result = await go().Download(
         appID,

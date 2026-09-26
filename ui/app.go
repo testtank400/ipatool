@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
 
 	"github.com/majd/ipatool/v2/internal/gui"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -52,6 +54,22 @@ func (a *App) SelectOutputPath() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select download folder",
 	})
+}
+
+// OutputDirectoryExists reports whether path is an existing directory. Missing
+// paths are a normal false result so stale frontend settings can be cleared.
+func (a *App) OutputDirectoryExists(path string) (bool, error) {
+	if path == "" {
+		return false, nil
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
 }
 
 // Download downloads an IPA then replicates sinfs.
