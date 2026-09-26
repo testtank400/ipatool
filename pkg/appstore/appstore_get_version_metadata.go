@@ -2,6 +2,7 @@ package appstore
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -9,6 +10,7 @@ type GetVersionMetadataInput struct {
 	Account   Account
 	App       App
 	VersionID string
+	Platform  Platform
 }
 
 type GetVersionMetadataOutput struct {
@@ -17,17 +19,29 @@ type GetVersionMetadataOutput struct {
 }
 
 func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
-	signer, guid, err := t.newActionSigner()
-	if err != nil {
-		return GetVersionMetadataOutput{}, err
+	platform := input.Platform
+	if platform == "" {
+		platform = PlatformIPhone
 	}
-	defer signer.Close()
 
-	return t.getVersionMetadata(input.Account, input.App, guid, input.VersionID, signer)
+	switch platform {
+	case PlatformIPhone, PlatformIPad, PlatformAppleTV, PlatformVisionOS, PlatformMacOS:
+	default:
+		return GetVersionMetadataOutput{}, fmt.Errorf("invalid platform %q", platform)
+	}
+
+	macAddr, err := t.machine.MacAddress()
+	if err != nil {
+		return GetVersionMetadataOutput{}, fmt.Errorf("failed to get mac address: %w", err)
+	}
+
+	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
+
+	return t.getVersionMetadata(input.Account, input.App, guid, input.VersionID, platform)
 }
 
-func (t *appstore) getVersionMetadata(acc Account, app App, guid, versionID string, signer ActionSigner) (GetVersionMetadataOutput, error) {
-	res, err := t.sendDownloadProduct(acc, app, guid, versionID, signer)
+func (t *appstore) getVersionMetadata(acc Account, app App, guid, versionID string, platform Platform) (GetVersionMetadataOutput, error) {
+	res, _, err := t.sendDownloadProduct(acc, app, guid, versionID, platform)
 	if err != nil {
 		return GetVersionMetadataOutput{}, err
 	}

@@ -36,13 +36,12 @@ type DownloadOutput struct {
 }
 
 func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
-	input.Account = t.ensureAccountPod(input.Account)
-
-	signer, guid, err := t.newActionSigner()
+	macAddr, err := t.machine.MacAddress()
 	if err != nil {
-		return DownloadOutput{}, err
+		return DownloadOutput{}, fmt.Errorf("failed to get mac address: %w", err)
 	}
-	defer signer.Close()
+
+	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
 
 	externalVersionID := input.ExternalVersionID
 	if externalVersionID == "" && (input.Platform == PlatformAppleTV || input.Platform == PlatformVisionOS) {
@@ -52,7 +51,7 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
 		}
 	}
 
-	res, err := t.sendDownloadProduct(input.Account, input.App, guid, externalVersionID, signer)
+	res, resolvedPlatform, err := t.sendDownloadProduct(input.Account, input.App, guid, externalVersionID, input.Platform)
 	if err != nil {
 		return DownloadOutput{}, err
 	}
@@ -87,7 +86,7 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
 		return DownloadOutput{}, fmt.Errorf("failed to apply patches: %w", err)
 	}
 
-	err = t.validatePackagePlatform(destination, input.Platform)
+	err = t.validatePackagePlatform(destination, resolvedPlatform)
 	if err != nil {
 		return DownloadOutput{}, fmt.Errorf("failed to validate package platform: %w", err)
 	}
@@ -243,45 +242,6 @@ func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *
 	return nil
 }
 
-func (t *appstore) sendDownloadProduct(acc Account, app App, guid string, externalVersionID string, signer ActionSigner) (http.Result[downloadResult], error) {
-	var (
-		res     http.Result[downloadResult]
-		lastErr error
-		gotRes  bool
-	)
-
-	for _, endpoint := range t.downloadEndpoints(acc, guid) {
-		req := t.downloadRequest(acc, app, guid, externalVersionID, signer, endpoint)
-		next, sendErr := t.downloadClient.Send(req)
-		if sendErr != nil {
-			lastErr = sendErr
-			continue
-		}
-
-		res = next
-		gotRes = true
-		lastErr = nil
-
-		if len(res.Data.Items) > 0 {
-			break
-		}
-
-		if res.Data.FailureType != "" || res.Data.CustomerMessage != "" {
-			break
-		}
-	}
-
-	if !gotRes {
-		if lastErr != nil {
-			return http.Result[downloadResult]{}, fmt.Errorf("failed to send http request: %w", lastErr)
-		}
-
-		return http.Result[downloadResult]{}, errors.New("failed to send http request")
-	}
-
-	return res, nil
-}
-
 func interpretDownloadResult(res http.Result[downloadResult]) error {
 	if res.Data.FailureType == FailureTypePasswordTokenExpired ||
 		res.Data.FailureType == FailureTypeSignInRequired ||
@@ -294,7 +254,8 @@ func interpretDownloadResult(res http.Result[downloadResult]) error {
 		return ErrLicenseRequired
 	}
 
-	if res.Data.FailureType != "" && res.Data.CustomerMessage != "" {
+	// Match upstream: customerMessage with a failureType OR an empty songList is an error.
+	if res.Data.CustomerMessage != "" && (res.Data.FailureType != "" || len(res.Data.Items) == 0) {
 		return NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.CustomerMessage), res)
 	}
 
@@ -303,66 +264,10 @@ func interpretDownloadResult(res http.Result[downloadResult]) error {
 	}
 
 	if len(res.Data.Items) == 0 {
-		// Apple returns an empty songList when the signed download request is
-		// rejected, the external version is unavailable, or the session cannot
-		// redownload that build. Preserve any customerMessage so callers can see why.
-		err := ErrEmptySongList
-		if res.Data.CustomerMessage != "" {
-			err = fmt.Errorf("%w: %s", ErrEmptySongList, res.Data.CustomerMessage)
-		}
-		return NewErrorWithMetadata(err, res)
+		return NewErrorWithMetadata(ErrEmptySongList, res)
 	}
 
 	return nil
-}
-
-func (*appstore) downloadEndpoints(acc Account, guid string) []string {
-	podPrefix := ""
-	if acc.Pod != "" {
-		podPrefix = "p" + acc.Pod + "-"
-	}
-
-	host := podPrefix + PrivateAppStoreAPIDomain
-
-	return []string{
-		fmt.Sprintf("https://%s/WebObjects/MZFinance.woa/wa/redownloadProduct?guid=%s", host, guid),
-		fmt.Sprintf("https://downloaddispatch.itunes.apple.com/r/redownload?guid=%s", guid),
-		fmt.Sprintf("https://%s%s?guid=%s", host, PrivateAppStoreAPIPathDownload, guid),
-		fmt.Sprintf("https://downloaddispatch.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=%s", guid),
-	}
-}
-
-func (*appstore) downloadRequest(acc Account, app App, guid string, externalVersionID string, signer ActionSigner, endpoint string) http.Request {
-	payload := map[string]interface{}{
-		"creditDisplay": "",
-		"guid":          guid,
-		"salableAdamId": app.ID,
-		"serialNumber":  "0",
-	}
-
-	if externalVersionID != "" {
-		payload["externalVersionId"] = externalVersionID
-		payload["appExtVrsId"] = externalVersionID
-	} else if strings.Contains(endpoint, "redownloadProduct") {
-		payload["appExtVrsId"] = "0"
-	}
-
-	return http.Request{
-		URL:            endpoint,
-		Method:         http.MethodPOST,
-		ResponseFormat: http.ResponseFormatXML,
-		ActionSigner:   signer,
-		Headers: map[string]string{
-			"Content-Type":        "application/x-apple-plist",
-			"iCloud-DSID":         acc.DirectoryServicesID,
-			"X-Dsid":              acc.DirectoryServicesID,
-			"X-Apple-Store-Front": acc.StoreFront,
-			"X-Token":             acc.PasswordToken,
-		},
-		Payload: &http.XMLPayload{
-			Content: payload,
-		},
-	}
 }
 
 func fileName(app App, version string) string {

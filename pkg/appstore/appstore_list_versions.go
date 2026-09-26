@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -18,6 +19,7 @@ const (
 type ListVersionsInput struct {
 	Account         Account
 	App             App
+	Platform        Platform
 	ResolveMetadata bool
 	Page            int
 	MaxResults      int
@@ -32,24 +34,34 @@ type ListVersionsOutput struct {
 }
 
 func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, error) {
-	input.Account = t.ensureAccountPod(input.Account)
-
-	signer, guid, err := t.newActionSigner()
-	if err != nil {
-		return ListVersionsOutput{}, fmt.Errorf("list history: %w", err)
+	platform := input.Platform
+	if platform == "" {
+		platform = PlatformIPhone
 	}
-	defer signer.Close()
 
-	output, err := t.listVersionHistory(input, guid, signer)
+	switch platform {
+	case PlatformIPhone, PlatformIPad, PlatformAppleTV, PlatformVisionOS, PlatformMacOS:
+	default:
+		return ListVersionsOutput{}, fmt.Errorf("invalid platform %q", platform)
+	}
+
+	macAddr, err := t.machine.MacAddress()
 	if err != nil {
-		return output, fmt.Errorf("list history: %w", err)
+		return ListVersionsOutput{}, fmt.Errorf("failed to get mac address: %w", err)
+	}
+
+	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
+
+	output, err := t.listVersionHistory(input, guid, platform)
+	if err != nil {
+		return output, err
 	}
 
 	if !input.ResolveMetadata {
 		return output, nil
 	}
 
-	output.Versions, err = t.resolveVersionMetadata(input.Account, input.App, guid, signer, output.ExternalVersionIdentifiers)
+	output.Versions, err = t.resolveVersionMetadata(input.Account, input.App, guid, platform, output.ExternalVersionIdentifiers)
 	if err != nil {
 		// Keep identifiers so callers can still show the page of version IDs
 		// when metadata resolve fails (token expiry, license, etc.).
@@ -59,8 +71,21 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
 	return output, nil
 }
 
-func (t *appstore) listVersionHistory(input ListVersionsInput, guid string, signer ActionSigner) (ListVersionsOutput, error) {
-	res, err := t.sendDownloadProduct(input.Account, input.App, guid, "", signer)
+func (t *appstore) listVersionHistory(input ListVersionsInput, guid string, platform Platform) (ListVersionsOutput, error) {
+	var externalVersionID string
+	var err error
+
+	switch platform {
+	case PlatformMacOS:
+		externalVersionID, err = t.lookupLatestMacOSExternalVersionID(input.Account, input.App)
+	case PlatformAppleTV, PlatformVisionOS:
+		externalVersionID, err = t.lookupLatestExternalVersionID(input.Account, input.App, platform)
+	}
+	if err != nil {
+		return ListVersionsOutput{}, fmt.Errorf("failed to resolve platform version: %w", err)
+	}
+
+	res, _, err := t.sendDownloadProduct(input.Account, input.App, guid, externalVersionID, platform)
 	if err != nil {
 		return ListVersionsOutput{}, err
 	}
@@ -140,7 +165,7 @@ func reverseStrings(ids []string) []string {
 	return reversed
 }
 
-func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, signer ActionSigner, ids []string) ([]ListedVersion, error) {
+func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, platform Platform, ids []string) ([]ListedVersion, error) {
 	if len(ids) == 0 {
 		return []ListedVersion{}, nil
 	}
@@ -172,7 +197,7 @@ func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, sig
 				}
 
 				listed := ListedVersion{ExternalVersionID: ids[index]}
-				metadata, metaErr := t.getVersionMetadata(acc, app, guid, ids[index], signer)
+				metadata, metaErr := t.getVersionMetadata(acc, app, guid, ids[index], platform)
 				if metaErr != nil {
 					if errors.Is(metaErr, ErrPasswordTokenExpired) || errors.Is(metaErr, ErrLicenseRequired) {
 						fatalMu.Lock()
@@ -218,4 +243,3 @@ func (t *appstore) resolveVersionMetadata(acc Account, app App, guid string, sig
 
 	return versions, nil
 }
-

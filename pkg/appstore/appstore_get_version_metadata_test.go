@@ -171,29 +171,21 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 	var (
 		ctrl               *gomock.Controller
 		mockMachine        *machine.MockMachine
-		mockDownloadClient *http.MockClient[downloadResult]
 		mockBagClient      *http.MockClient[bagResult]
-		signer             *stubActionSigner
+		mockDownloadClient *http.MockClient[downloadResult]
 		as                 AppStore
 	)
 
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
 		mockMachine = machine.NewMockMachine(ctrl)
-		mockDownloadClient = http.NewMockClient[downloadResult](ctrl)
 		mockBagClient = http.NewMockClient[bagResult](ctrl)
-		signer = &stubActionSigner{}
+		mockDownloadClient = http.NewMockClient[downloadResult](ctrl)
 		as = &appstore{
 			machine:        mockMachine,
-			downloadClient: mockDownloadClient,
 			bagClient:      mockBagClient,
+			downloadClient: mockDownloadClient,
 			httpClient:     http.NewClient[interface{}](http.Args{}),
-			actionSignerFactory: func(config SAPConfig, machineID []byte) (ActionSigner, error) {
-				Expect(config).To(Equal(validSAPConfig()))
-				Expect(machineID).To(Equal([]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}))
-
-				return signer, nil
-			},
 		}
 	})
 
@@ -217,12 +209,13 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 
 	When("request fails", func() {
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
-				Return(http.Result[downloadResult]{}, errors.New("request error")).
-				Times(4)
+				Return(http.Result[downloadResult]{}, errors.New("request error"))
 		})
 
 		It("returns error", func() {
@@ -233,24 +226,23 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 	})
 
 	When("request uses a custom pod", func() {
-		const testPod = "42"
+		const (
+			testPod  = "42"
+			testGUID = "001122334455"
+		)
 
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
-			calls := 0
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
-				DoAndReturn(func(req http.Request) (http.Result[downloadResult], error) {
-					if calls == 0 {
-						Expect(req.URL).To(Equal("https://p" + testPod + "-" + PrivateAppStoreAPIDomain + "/WebObjects/MZFinance.woa/wa/redownloadProduct?guid=" + testDownloadGUID))
-						Expect(req.ActionSigner).ToNot(BeNil())
-					}
-					calls++
-
-					return http.Result[downloadResult]{}, errors.New("request error")
+				Do(func(req http.Request) {
+					expectedURL := "https://p" + testPod + "-" + PrivateAppStoreAPIDomain + PrivateAppStoreAPIPathDownload + "?guid=" + testGUID
+					Expect(req.URL).To(Equal(expectedURL))
 				}).
-				Times(4)
+				Return(http.Result[downloadResult]{}, errors.New("request error"))
 		})
 
 		It("sends the request to the pod-specific host", func() {
@@ -266,7 +258,9 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 
 	When("password token is expired", func() {
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
@@ -285,7 +279,9 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 
 	When("Sign In to the iTunes Store", func() {
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
@@ -304,7 +300,9 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 
 	When("license is missing", func() {
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
@@ -323,7 +321,9 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 
 	When("store API returns error", func() {
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 		})
 
 		When("response contains customer message", func() {
@@ -366,16 +366,25 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 
 	When("store API returns no items", func() {
 		BeforeEach(func() {
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
 				Return(http.Result[downloadResult]{
+					StatusCode: gohttp.StatusOK,
 					Data: downloadResult{
 						Items: []downloadItemResult{},
 					},
-				}, nil).
-				Times(4)
+				}, nil)
+
+			mockBagClient.EXPECT().
+				Send(gomock.Any()).
+				Return(http.Result[bagResult]{
+					StatusCode: gohttp.StatusOK,
+					Data:       validBagResult(),
+				}, nil)
 		})
 
 		It("returns error", func() {
@@ -392,7 +401,9 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 			ipa := testIPA("1.0.0", "invalid-date", time.Date(2024, 3, 19, 12, 0, 0, 0, time.UTC))
 			server, _, _ = testIPAServer(ipa)
 
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
@@ -430,7 +441,9 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 				w.WriteHeader(gohttp.StatusOK)
 			}))
 
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
@@ -460,6 +473,41 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 		})
 	})
 
+	It("preserves the requested historical version through the redownload fallback", func() {
+		const versionID = "818970197"
+		releaseDate := time.Date(2016, 12, 15, 12, 0, 0, 0, time.UTC)
+		server, _, _ := testIPAServer(testIPA("1.0", releaseDate.Format(time.RFC3339), releaseDate))
+		defer server.Close()
+
+		bag := validBagResult()
+		bag.URLBag.RedownloadEndpoint = testRedownloadEndpoint
+		mockMachine.EXPECT().MacAddress().Return("00:11:22:33:44:55", nil)
+		gomock.InOrder(
+			mockDownloadClient.EXPECT().Send(gomock.Any()).
+				Do(func(req http.Request) {
+					Expect(req.Payload.(*http.XMLPayload).Content).To(HaveKeyWithValue("externalVersionId", versionID))
+				}).
+				Return(http.Result[downloadResult]{StatusCode: gohttp.StatusOK}, nil),
+			mockBagClient.EXPECT().Send(gomock.Any()).
+				Return(http.Result[bagResult]{StatusCode: gohttp.StatusOK, Data: bag}, nil),
+			mockDownloadClient.EXPECT().Send(gomock.Any()).
+				Do(func(req http.Request) {
+					payload := req.Payload.(*http.XMLPayload).Content
+					Expect(payload).To(HaveKeyWithValue("appExtVrsId", versionID))
+					Expect(payload).ToNot(HaveKey("externalVersionId"))
+				}).
+				Return(http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
+					Data: downloadResult{Items: []downloadItemResult{{URL: server.URL}}}}, nil),
+		)
+
+		output, err := as.GetVersionMetadata(GetVersionMetadataInput{
+			App: App{ID: 547702041}, VersionID: versionID,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(output.DisplayVersion).To(Equal("1.0"))
+		Expect(output.ReleaseDate).To(Equal(releaseDate))
+	})
+
 	When("successfully gets version metadata", func() {
 		var (
 			server         *httptest.Server
@@ -476,17 +524,12 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
 			ipa = testIPA(displayVersion, fmt.Sprintf(" \n%s\t", releaseDate.Format(time.RFC3339)), time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 			server, servedBytes, wholeGetCount = testIPAServer(ipa)
 
-			expectActionSignerSetup(mockMachine, mockBagClient)
+			mockMachine.EXPECT().
+				MacAddress().
+				Return("00:11:22:33:44:55", nil)
 
 			mockDownloadClient.EXPECT().
 				Send(gomock.Any()).
-				Do(func(req http.Request) {
-					Expect(req.ActionSigner).To(BeIdenticalTo(signer))
-					payload, ok := req.Payload.(*http.XMLPayload)
-					Expect(ok).To(BeTrue())
-					Expect(payload.Content["externalVersionId"]).To(Equal("test-version"))
-					Expect(payload.Content["appExtVrsId"]).To(Equal("test-version"))
-				}).
 				Return(http.Result[downloadResult]{
 					Data: downloadResult{
 						Items: []downloadItemResult{

@@ -17,8 +17,9 @@ var (
 )
 
 type PurchaseInput struct {
-	Account Account
-	App     App
+	Account  Account
+	App      App
+	Platform Platform
 }
 
 func (t *appstore) Purchase(input PurchaseInput) error {
@@ -35,7 +36,7 @@ func (t *appstore) Purchase(input PurchaseInput) error {
 
 	err = t.purchaseWithParams(input.Account, input.App, guid, PricingParameterAppStore)
 	if err != nil {
-		if err == ErrTemporarilyUnavailable {
+		if input.Platform != PlatformMacOS && err == ErrTemporarilyUnavailable {
 			err = t.purchaseWithParams(input.Account, input.App, guid, PricingParameterAppleArcade)
 			if err != nil {
 				return fmt.Errorf("failed to purchase item with param '%s': %w", PricingParameterAppleArcade, err)
@@ -58,17 +59,7 @@ type purchaseResult struct {
 }
 
 func (t *appstore) purchaseWithParams(acc Account, app App, guid string, pricingParameters string) error {
-	signer, signedGUID, err := t.newActionSigner()
-	if err != nil {
-		return err
-	}
-	defer signer.Close()
-
-	if guid == "" {
-		guid = signedGUID
-	}
-
-	req := t.purchaseRequest(acc, app, acc.StoreFront, guid, pricingParameters, signer)
+	req := t.purchaseRequest(acc, app, acc.StoreFront, guid, pricingParameters)
 	res, err := t.purchaseClient.Send(req)
 
 	if err != nil {
@@ -113,7 +104,7 @@ func (t *appstore) purchaseWithParams(acc Account, app App, guid string, pricing
 	return nil
 }
 
-func (t *appstore) purchaseRequest(acc Account, app App, storeFront, guid string, pricingParameters string, signer ActionSigner) http.Request {
+func (t *appstore) purchaseRequest(acc Account, app App, storeFront, guid string, pricingParameters string) http.Request {
 	podPrefix := ""
 	if acc.Pod != "" {
 		podPrefix = "p" + acc.Pod + "-"
@@ -123,7 +114,6 @@ func (t *appstore) purchaseRequest(acc Account, app App, storeFront, guid string
 		URL:            fmt.Sprintf("https://%s%s%s", podPrefix, PrivateAppStoreAPIDomain, PrivateAppStoreAPIPathPurchase),
 		Method:         http.MethodPOST,
 		ResponseFormat: http.ResponseFormatXML,
-		ActionSigner:   signer,
 		Headers: map[string]string{
 			"Content-Type":        "application/x-apple-plist",
 			"iCloud-DSID":         acc.DirectoryServicesID,
